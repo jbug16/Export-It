@@ -52,7 +52,21 @@ Add `--debug` to see search terms, top candidates, scores, and rejection reasons
 
 ### Regression tests
 
-These should pass:
+**Unit tests** (fast, no network — scoring, gates, cast-recording rules):
+
+```bash
+cd export-it
+npm test
+```
+
+**Integration tests** (live iTunes API — same cases as below; optional cases skip if iTunes has no match):
+
+```bash
+cd export-it
+npm run test:integration
+```
+
+These manual CLI checks match the integration suite. They should pass:
 
 ```bash
 npm run resolve -- --song "Tim McGraw" --artist "Taylor Swift"
@@ -127,7 +141,9 @@ Results show artist, song title, the YouTube video found, a link, and a confiden
 | `npm run stop`   | Free ports 3001 and 5173                         |
 | `npm run dev`    | Start the React frontend only                    |
 | `npm run server` | Start the Express backend only                   |
-| `npm run build`  | Build for production                             |
+| `npm run resolve` | iTunes metadata resolver CLI |
+| `npm test`        | Run unit tests (Vitest)      |
+| `npm run test:integration` | Live iTunes regression tests |
 
 ## Notes
 
