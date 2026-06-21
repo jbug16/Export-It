@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "resolve": "node scripts/resolve.js",
+    "find:youtube": "node scripts/find_youtube.js",
     "dev": "vite",
     "server": "node server/index.js",
     "stop": "kill-port 3001 5173 || true",

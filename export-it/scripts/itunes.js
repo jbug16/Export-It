@@ -171,6 +171,48 @@ export function queryRequestsCastRecording(album) {
   return CAST_RECORDING_QUERY_PATTERN.test(expandCastAbbreviations(album ?? ''))
 }
 
+function queryAllowsSingleOrEp(queryNorm) {
+  return /\b(single|ep)\b/.test(queryNorm)
+}
+
+function isSingleOrEpRelease(collectionName, queryNorm) {
+  const name = collectionName ?? ''
+  const nameNorm = normalize(name)
+  if (queryAllowsSingleOrEp(queryNorm)) return false
+
+  if (/\-\s*single\b/i.test(name)) return true
+  if (/\-\s*ep\b/i.test(name)) return true
+  if (nameNorm.endsWith(' single')) return true
+  if (nameNorm.endsWith(' ep')) return true
+  return false
+}
+
+function albumTrackCountBonus(trackCount, reasons) {
+  if (trackCount > 5) {
+    reasons.push(`bonus: full album track count (${trackCount})`)
+    return 0.12
+  }
+  if (trackCount > 3) {
+    reasons.push('bonus: reasonable track count')
+    return 0.04
+  }
+  return 0
+}
+
+function albumTrackCountPenalty(trackCount, parsed, reasons) {
+  if (!parsed.artist || parsed.song) return 0
+
+  if (trackCount <= 2) {
+    reasons.push(`penalty: very low track count (${trackCount}) for album query`)
+    return 0.35
+  }
+  if (trackCount <= 5) {
+    reasons.push(`penalty: low track count (${trackCount}) for album query`)
+    return 0.15
+  }
+  return 0
+}
+
 export function queryRequestsSoundtrack(album) {
   if (queryRequestsCastRecording(album)) return false
   return /\b(soundtrack|ost|score|awesome mix)\b/i.test(album ?? '')
@@ -612,6 +654,23 @@ export async function searchAlbumsWithTerms(terms) {
   return [...merged.values()]
 }
 
+export async function lookupArtistAlbumsByTitle(artistName, albumTitle, parsed) {
+  const artists = await searchArtists(artistName)
+  if (artists.length === 0) return []
+
+  const artistRanked = rankCandidates(artists, scoreArtistDetailed, parsed)
+  const bestArtist = pickBestRanked(artistRanked)
+  if (!bestArtist) return []
+
+  const albums = await lookupArtistAlbums(bestArtist.result.artistId)
+  const { baseTitle } = extractBaseTitle(albumTitle)
+
+  return albums.filter((album) => {
+    const phraseMatch = phraseTokensMatch(baseTitle, album.collectionName ?? '')
+    return phraseMatch.matched
+  })
+}
+
 export async function lookupAlbumTracks(collectionId) {
   const url = `${LOOKUP_URL}?${new URLSearchParams({
     id: String(collectionId),
@@ -758,6 +817,26 @@ export function scoreAlbumDetailed(result, parsed) {
     reasons.push(`bonus: collection name matches phrase tokens (${phraseTokens(baseTitle).join(' ')})`)
   }
 
+  const baseTitleNorm = normalize(parsed.baseTitle ?? parsed.album ?? '')
+
+  if (baseTitleNorm && collectionNorm === baseTitleNorm) {
+    score += 0.12
+    reasons.push('bonus: exact album title match')
+  } else if (baseTitleNorm && collectionNorm.startsWith(`${baseTitleNorm} `)) {
+    if (!queryNorm.includes('bonus') && collectionNorm.includes('bonus')) {
+      score -= 0.1
+      reasons.push('penalty: bonus edition when not requested')
+    }
+    if (!queryNorm.includes('moonlight') && collectionNorm.includes('moonlight')) {
+      score -= 0.08
+      reasons.push('penalty: alternate edition when not requested')
+    }
+    if (!queryNorm.includes('deluxe') && collectionNorm.includes('deluxe')) {
+      score -= 0.08
+      reasons.push('penalty: deluxe edition when not requested')
+    }
+  }
+
   if (parsed.isCastRecordingQuery) {
     if (hasOfficialCastWording(collectionNorm)) {
       score += 0.18
@@ -781,9 +860,14 @@ export function scoreAlbumDetailed(result, parsed) {
     reasons.push('bonus: collectionType is Album')
   }
 
-  if ((result.trackCount ?? 0) > 3) {
-    score += 0.04
-    reasons.push('bonus: reasonable track count')
+  const trackCount = result.trackCount ?? 0
+  score += albumTrackCountBonus(trackCount, reasons)
+  score -= albumTrackCountPenalty(trackCount, parsed, reasons)
+
+  const collectionName = result.collectionName ?? ''
+  if (isSingleOrEpRelease(collectionName, queryNorm)) {
+    score -= 0.45
+    reasons.push('penalty: single/EP release when full album expected')
   }
 
   score -= numberMismatchPenalty(parsed, result, reasons)
@@ -898,6 +982,14 @@ export function pickBestRanked(ranked) {
   return best ?? null
 }
 
+function formatDuration(trackTimeMillis) {
+  if (trackTimeMillis == null || trackTimeMillis <= 0) return {}
+  return {
+    durationMs: trackTimeMillis,
+    durationSeconds: Math.round(trackTimeMillis / 1000),
+  }
+}
+
 function mapTracksForOutput(tracks) {
   return tracks.map((track, index) => ({
     globalTrackNumber: index + 1,
@@ -906,6 +998,7 @@ function mapTracksForOutput(tracks) {
     artist: track.artistName,
     title: track.trackName,
     album: track.collectionName,
+    ...formatDuration(track.trackTimeMillis),
   }))
 }
 
@@ -921,6 +1014,7 @@ export function toSongOutput(query, track, confidence) {
       trackNumber: track.trackNumber ?? 1,
       source: SOURCE,
       confidence: Math.round(confidence * 100) / 100,
+      ...formatDuration(track.trackTimeMillis),
     },
   }
 }

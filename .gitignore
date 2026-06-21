@@ -1,3 +1,5 @@
 .idea/
 .DS_STORE
 references/
+tests/
+test-output/

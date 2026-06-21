@@ -4,6 +4,7 @@ import {
   formatDebugCandidate,
   lookupAlbumTracks,
   lookupArtistAlbums,
+  lookupArtistAlbumsByTitle,
   MIN_CONFIDENCE,
   pickBestRanked,
   rankCandidates,
@@ -18,6 +19,7 @@ import {
   toSongOutput,
   unknownOutput,
 } from './itunes.js'
+import { fileURLToPath } from 'node:url'
 
 const USAGE = `Usage:
   npm run resolve -- --song "Tim McGraw" --artist "Taylor Swift"
@@ -34,7 +36,7 @@ Options:
 
 const FLAG_NAMES = new Set(['--song', '--artist', '--album', '--debug', '--help', '-h'])
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const input = { song: null, artist: null, album: null, debug: false, help: false, positionalError: false }
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -68,7 +70,7 @@ function parseArgs(argv) {
   return input
 }
 
-function buildQueryObject(input) {
+export function buildQueryObject(input) {
   return {
     ...(input.song ? { song: input.song } : {}),
     ...(input.artist ? { artist: input.artist } : {}),
@@ -115,9 +117,27 @@ async function resolveAlbum(input) {
   const query = buildQueryObject(input)
   const parsed = buildParsed(input)
   const searchTerms = input.artist
-    ? [`${parsed.expandedAlbum ?? input.album} ${input.artist}`]
+    ? [
+        `${parsed.expandedAlbum ?? input.album} ${input.artist}`,
+        `${input.artist} ${parsed.expandedAlbum ?? input.album}`,
+        `${parsed.expandedAlbum ?? input.album} album ${input.artist}`,
+      ]
     : buildAlbumSearchTerms(input.album)
-  const results = await searchAlbumsWithTerms(searchTerms)
+
+  const merged = new Map()
+  for (const result of await searchAlbumsWithTerms(searchTerms)) {
+    if (result.collectionId) merged.set(result.collectionId, result)
+  }
+
+  if (input.artist) {
+    for (const result of await lookupArtistAlbumsByTitle(input.artist, input.album, parsed)) {
+      if (result.collectionId && !merged.has(result.collectionId)) {
+        merged.set(result.collectionId, result)
+      }
+    }
+  }
+
+  const results = [...merged.values()]
   const ranked = rankCandidates(results, scoreAlbumDetailed, parsed)
   const best = pickBestRanked(ranked)
 
@@ -183,7 +203,7 @@ async function resolveArtist(input) {
   return toArtistOutput(query, bestArtist.result, songs, bestArtist.confidence)
 }
 
-function detectMode(input) {
+export function detectMode(input) {
   const { song, artist, album } = input
 
   if (song && artist && !album) return 'song'
@@ -200,7 +220,7 @@ function detectMode(input) {
   return { error: 'Provide --song + --artist, --album (+ optional --artist), or --artist alone.' }
 }
 
-async function resolveInput(input) {
+export async function resolveInput(input) {
   const mode = detectMode(input)
   if (mode.error) return unknownOutput(buildQueryObject(input), mode.error)
 
@@ -233,4 +253,8 @@ async function main() {
   }
 }
 
-main()
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
+
+if (isMain) {
+  main()
+}
