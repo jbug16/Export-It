@@ -1,0 +1,10 @@
+{
+  "name": "export-it",
+  "private": true,
+  "scripts": {
+    "site": "npm run site --prefix export-it",
+    "stop": "npm run stop --prefix export-it",
+    "dev": "npm run dev --prefix export-it",
+    "server": "npm run server --prefix export-it"
+  }
+}
