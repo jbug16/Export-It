@@ -10,6 +10,13 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+downloads/*
+!downloads/.gitkeep
+data/*
+!data/.gitkeep
+Music/*
+!Music/.gitkeep
+.env
 *.local
 .cache
 

@@ -4,22 +4,21 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "resolve": "node scripts/resolve.js",
-    "find:youtube": "node scripts/find_youtube.js",
-    "dev": "vite",
+    "client": "vite",
     "server": "node server/index.js",
+    "dev": "concurrently -k -n SERVER,CLIENT \"npm run server\" \"npm run client\"",
     "stop": "kill-port 3001 5173 || true",
-    "site": "npm run stop && concurrently -k -n SERVER,FRONTEND \"npm run server\" \"npm run dev\"",
+    "site": "npm run stop && npm run dev",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:integration": "node tests/integration.mjs"
+    "preview": "vite preview"
   },
   "dependencies": {
+    "better-sqlite3": "^12.11.1",
     "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
     "express": "^5.1.0",
+    "node-id3": "^0.2.9",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },
@@ -34,7 +33,6 @@
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
     "kill-port": "^2.0.1",
-    "vite": "^8.0.12",
-    "vitest": "^4.1.9"
+    "vite": "^8.0.12"
   }
 }
