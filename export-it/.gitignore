@@ -17,6 +17,9 @@ data/*
 Music/*
 !Music/.gitkeep
 .env
+backend/.venv
+backend/**/__pycache__
+backend/**/*.egg-info
 *.local
 .cache
 

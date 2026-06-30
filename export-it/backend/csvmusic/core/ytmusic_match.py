@@ -1,0 +1,285 @@
+# tabs only
+from typing import Dict, List, Optional, Tuple, Set, Literal
+import re, time, unicodedata
+from ytmusicapi import YTMusic
+
+CONFIDENCE_MIN = 0.6
+SEARCH_LIMIT = 12
+ALT_SEARCH_LIMIT = 24
+RATE_LIMIT_S = 0.35
+DURATION_TOLERANCE_RATIO = 0.10
+SEARCH_RETRY_COUNT = 2
+SEARCH_RETRY_SLEEP_S = 0.9
+
+_PENALTY_TERMS = {"live","remix","cover","sped","slowed","nightcore","8d","reverb","extended","mashup","edit","karaoke","instrumental","demo","tribute","soundalike"}
+_CAST_PENALTY_TERMS = {"cast","original cast","tribute band","musical","orchestra"}
+
+def _norm_text(s: str) -> str:
+	text = unicodedata.normalize("NFKC", (s or "").casefold())
+	return re.sub(r"\s+", " ", text).strip()
+
+def _toks(s: str) -> set:
+	text = _norm_text(s)
+	return {tok for tok in re.findall(r"\w+", text, flags=re.UNICODE) if any(ch.isalnum() for ch in tok)}
+
+def _candidate_artist_text(cand: Dict) -> str:
+	if cand.get("artists"):
+		try:
+			return ", ".join(a.get("name", "") for a in cand["artists"])
+		except Exception:
+			pass
+	return cand.get("author", "") or ""
+
+def _overlap_ratio(needle: set, haystack: set) -> float:
+	return len(needle & haystack) / max(1, len(needle))
+
+def _duration_s(d: Optional[int | str]) -> int:
+	try:
+		if d is None:
+			return 0
+		if isinstance(d, str):
+			text = d.strip()
+			if not text:
+				return 0
+			if ":" in text:
+				total = 0
+				for part in text.split(":"):
+					total = total * 60 + int(part)
+				return total
+			return int(float(text))
+		return int(d)
+	except Exception:
+		return 0
+
+def _track_duration_s(track: Dict) -> int:
+	try:
+		return int(round((track.get("duration_ms") or 0) / 1000))
+	except Exception:
+		return 0
+
+def _duration_within_tolerance(track: Dict, cand: Dict) -> bool:
+	track_s = _track_duration_s(track)
+	cand_s = _duration_s(cand.get("duration_seconds"))
+	if track_s <= 0 or cand_s <= 0:
+		return True
+	return abs(track_s - cand_s) <= max(1.0, track_s * DURATION_TOLERANCE_RATIO)
+
+def _score(track: Dict, cand: Dict) -> float:
+	# Score title and artist separately so "tribute to ARTIST" in the title
+	# does not masquerade as an actual artist match.
+	track_title_tokens = _toks(track.get("title",""))
+	track_artist_tokens = _toks(track.get("artists",""))
+	cand_title = cand.get("title") or ""
+	cand_art = _candidate_artist_text(cand)
+	cand_title_tokens = _toks(cand_title)
+	cand_artist_tokens = _toks(cand_art)
+	title_overlap = _overlap_ratio(track_title_tokens, cand_title_tokens)
+	artist_overlap = _overlap_ratio(track_artist_tokens, cand_artist_tokens)
+
+	# duration (CSV may not have; cand might)
+	sp_s = _track_duration_s(track)
+	yt_s = _duration_s(cand.get("duration_seconds"))
+	if sp_s > 0 and yt_s > 0:
+		delta = abs(sp_s - yt_s)
+		if delta <= 6:
+			d_score = 1.0
+		elif delta <= 12:
+			d_score = 0.9
+		elif delta <= 20:
+			d_score = 0.78
+		elif delta <= 30:
+			d_score = 0.62
+		else:
+			d_score = 0.45
+	else:
+		d_score = 0.7  # neutral baseline when no duration available
+
+	# channel boost
+	channel = _norm_text(cand.get("author") or "")
+	ch_boost = 0.15 if ("topic" in channel or "official" in channel) else 0.0
+
+	# penalties
+	titleblob = _norm_text(cand_title + " " + cand_art)
+	p_pen = 0.0
+	for t in _PENALTY_TERMS:
+		if t in titleblob:
+			p_pen += 0.10
+	if artist_overlap == 0.0:
+		for t in _CAST_PENALTY_TERMS:
+			if t in titleblob:
+				p_pen += 0.18
+	if "tribute" in titleblob and artist_overlap < 0.5:
+		p_pen += 0.25
+	if "remaster" in titleblob:
+		p_pen *= 0.6
+
+	total = max(0.0, d_score * 0.35 + title_overlap * 0.35 + artist_overlap * 0.25 + ch_boost - p_pen)
+	return min(total, 0.99)
+
+def _clean_title_artist(title: str, artists: str) -> str:
+	# Basic collapse of whitespace and stray separators for searching
+	q = f"{title} {artists}".strip()
+	q = re.sub(r"\s+", " ", q)
+	q = q.replace(" - ", " ")
+	q = q.replace("–", " ").replace("—", " ")
+	return q.strip()
+
+def _strip_noise(title: str) -> str:
+	# Remove common bracketed qualifiers that hurt search recall
+	# e.g., (feat. ...), [Official Video], (Live), etc.
+	s = re.sub(r"[\(\[][^\)\]]*[Ff]eat[^\)\]]*[\)\]]", " ", title)
+	s = re.sub(r"[\(\[][Oo]fficial[^\)\]]*[\)\]]", " ", s)
+	s = re.sub(r"[\(\[][Ll]ive[^\)\]]*[\)\]]", " ", s)
+	s = re.sub(r"[\(\[][Rr]emix[^\)\]]*[\)\]]", " ", s)
+	# Remove any empty brackets left behind
+	s = re.sub(r"[\(\)\[\]]", " ", s)
+	return re.sub(r"\s+", " ", s).strip()
+
+def _query_variants(track: Dict) -> List[str]:
+	"""
+	Generate a small set of search queries to improve recall across
+	"&" vs "and", hyphens, and bracketed noise.
+	Order variants from most specific to broader fallbacks.
+	"""
+	title = track.get("title", "") or ""
+	artists = track.get("artists", "") or ""
+	isrc = track.get("isrc")
+
+	base_title = title
+	clean_title = _strip_noise(base_title)
+	base = _clean_title_artist(base_title, artists)
+	clean = _clean_title_artist(clean_title, artists)
+
+	variants: List[str] = []
+	if isrc:
+		variants.append(f"{isrc} {clean}")
+
+	variants.append(base)
+	if clean != base:
+		variants.append(clean)
+
+	# Swap common conjunction styles
+	if "&" in base:
+		variants.append(base.replace("&", "and"))
+	if re.search(r"\band\b", base, flags=re.I):
+		variants.append(re.sub(r"\band\b", "&", base, flags=re.I))
+
+	# Hyphen to space (already mostly handled in _clean_title_artist)
+	if "-" in base:
+		variants.append(base.replace("-", " "))
+
+	# Deduplicate while preserving order
+	seen: Set[str] = set()
+	out: List[str] = []
+	for q in variants:
+		qq = re.sub(r"\s+", " ", q).strip()
+		if qq and qq not in seen:
+			seen.add(qq)
+			out.append(qq)
+	return out
+
+SearchSource = Literal["music", "videos", "all"]
+
+
+def _search_filter(yt: YTMusic, q: str, search_filter: str, limit: int) -> List[Dict]:
+	res = yt.search(q, filter=search_filter, limit=limit) or []
+	cands: List[Dict] = []
+	source = "music" if search_filter == "songs" else "videos"
+	for r in res:
+		vid = r.get("videoId")
+		if not vid:
+			continue
+		artists = r.get("artists")
+		cands.append({
+			"videoId": vid,
+			"title": r.get("title"),
+			"artists": artists if search_filter == "songs" else None,
+			"author": (artists[0]["name"] if artists and search_filter == "songs" else r.get("author") or ""),
+			"duration_seconds": _duration_s(r.get("duration_seconds") or r.get("duration")),
+			"source": source,
+		})
+	return cands
+
+
+def _search(yt: YTMusic, q: str, limit: int = SEARCH_LIMIT, source_mode: SearchSource = "all") -> List[Dict]:
+	cands: List[Dict] = []
+	if source_mode in ("music", "all"):
+		cands.extend(_search_filter(yt, q, "songs", limit))
+	if source_mode in ("videos", "all"):
+		cands.extend(_search_filter(yt, q, "videos", limit))
+	return cands
+
+
+def _rank_candidates(yt: YTMusic, track: Dict, limit: int = SEARCH_LIMIT, source_mode: SearchSource = "all") -> List[Dict]:
+	seen_vids: Set[str] = set()
+	all_cands: List[Dict] = []
+	for q in _query_variants(track):
+		cands = _search(yt, q, limit, source_mode)
+		for cand in cands:
+			vid = cand.get("videoId")
+			if not vid or vid in seen_vids:
+				continue
+			seen_vids.add(vid)
+			all_cands.append(cand)
+
+	scored: List[Dict] = []
+	for cand in all_cands:
+		if not _duration_within_tolerance(track, cand):
+			continue
+		s = _score(track, cand)
+		item = dict(cand)
+		item["score"] = s
+		scored.append(item)
+
+	return sorted(scored, key=lambda c: (c["score"], 1 if c.get("source") == "music" else 0), reverse=True)
+
+def find_best(yt: YTMusic, track: Dict) -> Tuple[Optional[Dict], float, List[Dict]]:
+	options = _rank_candidates(yt, track)
+	if not options:
+		last_exc: Exception | None = None
+		for _ in range(SEARCH_RETRY_COUNT):
+			time.sleep(SEARCH_RETRY_SLEEP_S)
+			try:
+				fresh = YTMusic()
+				options = _rank_candidates(fresh, track)
+			except Exception as exc:
+				last_exc = exc
+				continue
+			if options:
+				break
+		if not options and last_exc is not None:
+			raise last_exc
+	if not options:
+		return None, 0.0, []
+	best = options[0]
+	return (best if best["score"] >= CONFIDENCE_MIN else None, best["score"], options)
+
+def more_candidates(track: Dict, exclude_ids: Set[str] | None = None, limit: int = ALT_SEARCH_LIMIT, source_mode: SearchSource = "all") -> List[Dict]:
+	exclude = set(exclude_ids or [])
+	yt = YTMusic()
+	options = _rank_candidates(yt, track, limit, source_mode)
+	return [opt for opt in options if opt.get("videoId") not in exclude]
+
+def batch_match(tracks: List[Dict]) -> List[Dict]:
+	"""
+	Input: list of track dicts (from csv_import.tracks_from_csv)
+	Output: list of results with either 'match' or 'skipped': True
+	"""
+	yt = YTMusic()  # anonymous client; should work for public search endpoints
+	results = []
+	for t in tracks:
+		res = {"track": t, "skipped": False, "match": None, "confidence": 0.0, "options": []}
+		try:
+			match, conf, options = find_best(yt, t)
+			res["confidence"] = conf
+			res["options"] = options
+			if match is None:
+				res["skipped"] = True
+			else:
+				res["match"] = match
+		except Exception as e:
+			res["skipped"] = True
+			res["error"] = str(e)
+		results.append(res)
+		time.sleep(RATE_LIMIT_S)
+	return results
