@@ -227,6 +227,21 @@ class PipelineRunner:
 			return f"Safe mode: {base[0].lower()}{base[1:]}"
 		return base
 
+	def _default_playlist_name(self, tracks: List[Dict]) -> str:
+		cfg = self.config
+		if cfg.playlist:
+			return cfg.playlist
+		if tracks:
+			return tracks[0].get("playlist") or "Playlist"
+		return "Playlist"
+
+	def _dest_dir_for_track(self, track: Dict, default_playlist: str) -> tuple[pathlib.Path, str]:
+		playlist_name = (track.get("playlist") or "").strip() or default_playlist or "Playlist"
+		safe_playlist = sanitize_name(playlist_name) or "Playlist"
+		dest_dir = self.out_dir / safe_playlist
+		dest_dir.mkdir(parents=True, exist_ok=True)
+		return dest_dir, playlist_name
+
 	def run(self) -> None:
 		cfg = self.config
 		cb = self.cb
@@ -256,12 +271,7 @@ class PipelineRunner:
 				yt = YTMusic()
 			except Exception as exc:
 				raise RuntimeError(f"Failed to initialize YTMusic client: {exc}") from exc
-			playlist_name = cfg.playlist or (tracks[0]["playlist"] if tracks else "Playlist")
-			if not playlist_name:
-				playlist_name = "Playlist"
-			safe_playlist = sanitize_name(playlist_name) or "Playlist"
-			dest_dir = self.out_dir / safe_playlist
-			dest_dir.mkdir(parents=True, exist_ok=True)
+			playlist_name = self._default_playlist_name(tracks)
 			done_tracks: List[Dict] = []
 			failed_tracks: List[Dict] = []
 			skipped_tracks: List[Dict] = []
@@ -274,6 +284,7 @@ class PipelineRunner:
 				t = track
 				title = t["title"]
 				artists = t["artists"]
+				dest_dir, track_playlist_name = self._dest_dir_for_track(t, playlist_name)
 				search_error = None
 				options: List[Dict] = []
 				match = None
@@ -289,7 +300,7 @@ class PipelineRunner:
 					"confidence": confidence,
 					"skipped": False,
 					"error": None,
-					"playlist_name": playlist_name,
+					"playlist_name": track_playlist_name,
 					"file_path": None,
 					"downloaded": False,
 					"forced_match": False,
@@ -390,7 +401,7 @@ class PipelineRunner:
 						except Exception as retry_exc:
 							err = str(retry_exc)
 					if not retried:
-						log(f"download failure: playlist='{playlist_name}' track='{artists} — {title}' fmt={cfg.fmt} error={err}")
+						log(f"download failure: playlist='{track_playlist_name}' track='{artists} — {title}' fmt={cfg.fmt} error={err}")
 						cb.on_row_status(row_idx, f"Fail: {err[:120]}")
 						failed_tracks.append({"track": t, "error": err})
 						error_msg = err
@@ -408,12 +419,18 @@ class PipelineRunner:
 			if done_tracks:
 				ext = "m4a" if cfg.fmt == "m4a" else "mp3"
 				write_lists = (cfg.source_type or "").lower() != "album"
-				if write_lists and cfg.write_m3u8:
-					m3u = write_m3u(self.out_dir, playlist_name, done_tracks, ext, suffix=".m3u8", encoding="utf-8")
-					cb.on_log(f"[m3u] wrote: {m3u}")
-				if write_lists and cfg.write_m3u_plain:
-					m3u_plain = write_m3u(self.out_dir, playlist_name, done_tracks, ext, suffix=".m3u", encoding="utf-8-sig")
-					cb.on_log(f"[m3u] wrote: {m3u_plain}")
+				if write_lists:
+					by_playlist: Dict[str, List[Dict]] = {}
+					for t in done_tracks:
+						pl = (t.get("playlist") or "").strip() or playlist_name
+						by_playlist.setdefault(pl, []).append(t)
+					for pl_name, pl_tracks in by_playlist.items():
+						if cfg.write_m3u8:
+							m3u = write_m3u(self.out_dir, pl_name, pl_tracks, ext, suffix=".m3u8", encoding="utf-8")
+							cb.on_log(f"[m3u] wrote: {m3u}")
+						if cfg.write_m3u_plain:
+							m3u_plain = write_m3u(self.out_dir, pl_name, pl_tracks, ext, suffix=".m3u", encoding="utf-8-sig")
+							cb.on_log(f"[m3u] wrote: {m3u_plain}")
 			msg = "All tasks finished."
 			if cb.should_stop():
 				msg = "Stopped (partial results saved)."

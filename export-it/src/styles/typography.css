@@ -1,0 +1,69 @@
+/* Shared typography — use classes instead of one-off font sizes */
+
+.app-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.section-title {
+  margin: 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  line-height: var(--line-height-tight);
+}
+
+.card-title {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+}
+
+.label,
+.small-label,
+.summary-field-label,
+.summary-field dt {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}
+
+.meta,
+.muted {
+  color: var(--color-text-muted);
+}
+
+.body {
+  font-size: var(--font-size-lg);
+  line-height: var(--line-height-normal);
+}
+
+.small-body {
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+}
+
+.summary-field-value,
+.summary-field dd {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+}
+
+.text-error {
+  color: var(--color-danger-soft);
+}
+
+.text-success {
+  color: var(--color-success-soft);
+}
+
+.text-primary-soft {
+  color: var(--color-primary-soft);
+}

@@ -1,3 +1,6 @@
+import { faXmark } from '@fortawesome/free-solid-svg-icons'
+import { IconButton } from './Buttons.jsx'
+
 function formatScore(score) {
   if (!score) return '—'
   return `${Math.round(score * 100)}%`
@@ -9,10 +12,10 @@ export default function AlternativesModal({ track, options, loading, onClose, on
       <div className="modal alt-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-labelledby="alt-title">
         <header className="modal-header">
           <div>
-            <h2 id="alt-title">Alternatives</h2>
+            <h2 id="alt-title">Change match</h2>
             <p className="muted">{track?.artists} — {track?.title}</p>
           </div>
-          <button type="button" className="btn btn-ghost" onClick={onClose}>×</button>
+          <IconButton icon={faXmark} label="Close" onClick={onClose} className="modal-close" />
         </header>
         <div className="modal-body">
           {loading && <p>Searching YouTube Music…</p>}

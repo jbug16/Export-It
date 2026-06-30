@@ -1,0 +1,77 @@
+/* Shared badge variants */
+
+.badge,
+.item-status {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  flex-shrink: 0;
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  line-height: 1.2;
+}
+
+.badge--muted,
+.item-status-queued {
+  background: var(--color-surface-raised);
+  color: var(--color-text-muted);
+}
+
+.badge--success,
+.item-status-done {
+  background: var(--color-success-bg);
+  color: var(--color-success-soft);
+}
+
+.badge--danger,
+.item-status-failed {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-soft);
+}
+
+.badge--spotify,
+.item-status-downloading {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--color-primary-soft);
+}
+
+.badge--primary {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--color-primary-soft);
+}
+
+.item-status {
+  margin-top: var(--space-1);
+}
+
+.header-spotify-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 6px var(--space-3);
+  border-radius: var(--radius-pill);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  line-height: var(--line-height-tight);
+  background: var(--color-surface);
+  border: var(--border-width) solid var(--color-border);
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.header-spotify-badge:hover {
+  background: var(--color-surface-raised);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.header-spotify-badge:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}

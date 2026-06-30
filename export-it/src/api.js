@@ -36,6 +36,13 @@ export function saveSettings(data) {
   return request('/api/settings', { method: 'PUT', body: JSON.stringify({ data }) })
 }
 
+export function pickFolder(initialDir = '') {
+  return request('/api/dialog/pick-folder', {
+    method: 'POST',
+    body: JSON.stringify({ initialDir: initialDir || null }),
+  })
+}
+
 export function fetchSpotifyMe() {
   return request('/api/spotify/me')
 }

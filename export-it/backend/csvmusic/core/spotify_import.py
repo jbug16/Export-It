@@ -9,7 +9,7 @@ import httpx
 
 SPOTIFY_API = "https://api.spotify.com/v1"
 
-SourceType = Literal["album", "playlist"]
+SourceType = Literal["album", "playlist", "track"]
 
 
 class SpotifyApiError(Exception):
@@ -51,6 +51,9 @@ def parse_spotify_url(url: str) -> Tuple[SourceType, str] | None:
 	playlist = re.search(r"open\.spotify\.com/playlist/([a-zA-Z0-9]+)", text)
 	if playlist:
 		return ("playlist", playlist.group(1))
+	track = re.search(r"open\.spotify\.com/track/([a-zA-Z0-9]+)", text)
+	if track:
+		return ("track", track.group(1))
 	return None
 
 
@@ -114,11 +117,13 @@ async def _get(client: httpx.AsyncClient, path: str, token: str) -> dict:
 async def resolve_spotify_url(url: str, access_token: str) -> dict:
 	parsed = parse_spotify_url(url)
 	if not parsed:
-		raise ValueError("Invalid Spotify URL. Use an album or playlist link.")
+		raise ValueError("Invalid Spotify URL. Use an album, playlist, or track link.")
 	source_type, spotify_id = parsed
 	async with httpx.AsyncClient(timeout=30.0) as client:
 		if source_type == "album":
 			return await _resolve_album(client, spotify_id, access_token)
+		if source_type == "track":
+			return await _resolve_track(client, spotify_id, access_token)
 		return await _resolve_playlist(client, spotify_id, access_token)
 
 
@@ -157,6 +162,42 @@ async def _resolve_album(client: httpx.AsyncClient, album_id: str, token: str) -
 		"owner": artist,
 		"coverUrl": cover,
 		"trackCount": len(tracks),
+		"playlist": name,
+		"tracks": tracks,
+	}
+
+
+async def _resolve_track(client: httpx.AsyncClient, track_id: str, token: str) -> dict:
+	item = await _get(client, f"/tracks/{track_id}", token)
+	name = item.get("name") or "Track"
+	artist = _artist_names(item.get("artists"))
+	album = item.get("album") or {}
+	album_name = album.get("name") or ""
+	cover = _album_image(album)
+	release_year = (album.get("release_date") or "")[:4] or None
+	ext = item.get("external_ids") or {}
+	tracks = [_track_dict(
+		title=name,
+		artists=artist,
+		album=album_name,
+		playlist=name,
+		sp_id=item.get("id"),
+		isrc=ext.get("isrc"),
+		duration_ms=int(item.get("duration_ms") or 0),
+		track_no=int(item.get("track_number") or 1),
+		disc_no=int(item.get("disc_number") or 1),
+		cover_url=cover,
+		year=release_year,
+		album_artist=_artist_names(album.get("artists")),
+		album_total_tracks=int(album.get("total_tracks") or 1),
+		source_type="track",
+	)]
+	return {
+		"type": "track",
+		"name": name,
+		"owner": artist,
+		"coverUrl": cover,
+		"trackCount": 1,
 		"playlist": name,
 		"tracks": tracks,
 	}

@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from api import jobs as job_service
 from api import spotify_auth
+from api.dialogs import pick_folder, warm_dialog_subsystem
 from csvmusic.core.csv_import import load_csv, tracks_from_csv
 from csvmusic.core.paths import ffmpeg_path, ytdlp_path
 from csvmusic.core.pipeline import PipelineConfig
@@ -35,6 +36,13 @@ MUSIC_DIR = ROOT / "Music"
 MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Export-It API")
+
+
+@app.on_event("startup")
+def _warm_native_dialogs() -> None:
+	warm_dialog_subsystem()
+
+
 app.add_middleware(
 	CORSMiddleware,
 	allow_origins=["*"],
@@ -74,6 +82,10 @@ class DownloadTrackBody(BaseModel):
 
 class SettingsBody(BaseModel):
 	data: dict
+
+
+class PickFolderBody(BaseModel):
+	initialDir: str | None = None
 
 
 class PreviewState(BaseModel):
@@ -249,6 +261,17 @@ def get_settings():
 def put_settings(body: SettingsBody):
 	save_settings(body.data)
 	return load_settings()
+
+
+@app.post("/api/dialog/pick-folder")
+def dialog_pick_folder(body: PickFolderBody | None = None):
+	try:
+		path = pick_folder(body.initialDir if body else None)
+	except Exception as exc:
+		raise HTTPException(500, f"Could not open folder picker: {exc}") from exc
+	if not path:
+		return {"cancelled": True, "path": None}
+	return {"cancelled": False, "path": path}
 
 
 @app.post("/api/jobs")

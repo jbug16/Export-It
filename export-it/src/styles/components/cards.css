@@ -1,0 +1,140 @@
+/* Shared card / panel surfaces */
+
+.card,
+.sidebar-card,
+.detected-preview,
+.spotify-connection-box,
+.issue-item,
+.modal,
+.help-panel,
+.log-pre {
+  background: var(--color-surface);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.sidebar-card {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.card--raised {
+  background: var(--color-surface-raised);
+}
+
+.card--connect {
+  border-radius: var(--radius-lg);
+}
+
+.spotify-connection-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-5) var(--space-4);
+  text-align: center;
+}
+
+.detected-preview {
+  overflow: hidden;
+}
+
+/* Album card grid */
+.album-card {
+  display: grid;
+  grid-template-columns: var(--album-art-sm) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  min-height: 84px;
+}
+
+.album-card-art {
+  width: var(--album-art-sm);
+  height: var(--album-art-sm);
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.album-card-art-placeholder {
+  background: var(--color-surface-raised);
+  border: var(--border-width) solid var(--color-border);
+}
+
+.album-card-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.album-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.album-card-meta span {
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+  color: var(--color-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detected-preview .track-list,
+.detected-preview .song-list {
+  padding: var(--space-2) var(--space-4) var(--space-3);
+  border-top: var(--border-width) solid var(--color-border);
+}
+
+/* Summary card fields */
+.summary-fields {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2) var(--space-4);
+}
+
+.summary-fields-compact {
+  gap: var(--space-2) var(--space-3);
+}
+
+.summary-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.summary-field-edit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.summary-field-path .summary-field-value {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.summary-field-error .summary-field-value {
+  color: var(--color-danger-soft);
+}
+
+.summary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+.summary-actions-stack {
+  flex-direction: column;
+  gap: var(--space-2);
+}

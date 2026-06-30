@@ -1,25 +1,45 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   cancelJob,
   downloadTrackWithMatch,
   fetchAlternatives,
   fetchHealth,
-  fetchPreview,
   fetchSettings,
   fetchSpotifyMe,
   getJob,
-  importCsv,
+  pickFolder,
   resolveSpotifyUrl,
   saveSettings,
-  spotifyLogout,
   startJob,
   startSpotifyLogin,
+  spotifyLogout,
 } from './api.js'
 import AlternativesModal from './components/AlternativesModal.jsx'
-import SettingsPanel from './components/SettingsPanel.jsx'
+import { IconButton } from './components/Buttons.jsx'
+import ConnectScreen from './components/layout/ConnectScreen.jsx'
+import AppHeader from './components/layout/AppHeader.jsx'
+import CompletionView from './components/layout/CompletionView.jsx'
+import DownloadSummaryCard from './components/layout/DownloadSummaryCard.jsx'
+import IssueReview from './components/layout/IssueReview.jsx'
+import ProgressView from './components/layout/ProgressView.jsx'
+import SpotifyLinksSection from './components/layout/SpotifyLinksSection.jsx'
+import { faXmark } from '@fortawesome/free-solid-svg-icons'
+import { getRowBadge, isSpotifyUrl, normalizeSpotifyUrl } from './utils/status.js'
+import {
+  countDownloaded,
+  findDownloadProgress,
+  getScreenState,
+} from './utils/screenState.js'
 import './App.css'
 
-const CONFIDENCE_MIN = 0.6
+const SPOTIFY_CONNECT_KEY = 'export_it_spotify_connecting'
+
+let nextLinkId = 1
+let nextItemId = 1
+
+function createLinkRow(url = '') {
+  return { id: nextLinkId++, url, status: 'empty', error: null, itemId: null }
+}
 
 function initialErrorFromUrl() {
   const params = new URLSearchParams(window.location.search)
@@ -31,32 +51,54 @@ function initialErrorFromUrl() {
   return ''
 }
 
-function formatConfidence(value) {
-  if (!value) return '—'
-  return `${Math.round(value * 100)}%`
+function mergeTracksFromItems(items) {
+  const tracks = []
+  for (const item of items) {
+    for (const track of item.tracks) {
+      tracks.push({
+        ...track,
+        playlist: track.playlist || item.name,
+        _sourceId: item.id,
+        _sourceName: item.name,
+      })
+    }
+  }
+  return tracks
 }
 
 export default function App() {
   const [health, setHealth] = useState(null)
   const [spotifyUser, setSpotifyUser] = useState(null)
-  const [spotifyUrl, setSpotifyUrl] = useState('')
-  const [source, setSource] = useState(null)
-  const [tracks, setTracks] = useState([])
-  const [playlistName, setPlaylistName] = useState('')
+  const [spotifyConnectionStatus, setSpotifyConnectionStatus] = useState('disconnected')
+  const [linkRows, setLinkRows] = useState([createLinkRow()])
+  const [detectedItems, setDetectedItems] = useState([])
+  const [expandedSongItems, setExpandedSongItems] = useState(() => new Set())
   const [outDir, setOutDir] = useState('')
   const [settings, setSettings] = useState({})
-  const [settingsOpen, setSettingsOpen] = useState(false)
-  const [helpOpen, setHelpOpen] = useState(false)
   const [job, setJob] = useState(null)
   const [jobId, setJobId] = useState(null)
-  const [logs, setLogs] = useState([])
   const [error, setError] = useState(initialErrorFromUrl)
-  const [loading, setLoading] = useState(false)
   const [altRow, setAltRow] = useState(null)
   const [altOptions, setAltOptions] = useState([])
   const [altLoading, setAltLoading] = useState(false)
+  const [reviewingIssues, setReviewingIssues] = useState(false)
+  const [browsingFolder, setBrowsingFolder] = useState(false)
   const pollRef = useRef(null)
-  const csvInputRef = useRef(null)
+  const connectLockRef = useRef(false)
+
+  const tracks = useMemo(() => mergeTracksFromItems(detectedItems), [detectedItems])
+  const jobPlaylist = detectedItems.length === 1 ? detectedItems[0].name : null
+  const primarySource = detectedItems[0] || null
+
+  const itemTrackOffsets = useMemo(() => {
+    const map = new Map()
+    let offset = 0
+    for (const item of detectedItems) {
+      map.set(item.id, offset)
+      offset += item.tracks.length
+    }
+    return map
+  }, [detectedItems])
 
   const rowMap = useMemo(() => {
     const map = new Map()
@@ -67,41 +109,121 @@ export default function App() {
   }, [job])
 
   const isRunning = job?.status === 'running' || job?.status === 'queued'
-  const canStart = tracks.length > 0 && outDir.trim() && !isRunning
+  const hasReadyItems = detectedItems.length > 0
+  const canDownload = hasReadyItems && outDir.trim() && !isRunning && spotifyConnectionStatus === 'connected'
+
+  const issueCount = useMemo(() => {
+    if (!job?.rows) return 0
+    return job.rows.filter((row) => {
+      const badge = getRowBadge(row, true)
+      return badge.variant === 'failed' || badge.variant === 'review' || badge.variant === 'skipped'
+    }).length
+  }, [job])
+
+  const screenState = getScreenState({
+    detectedItems,
+    job,
+    isRunning,
+    reviewingIssues,
+  })
+
+  const isQueueState = ['empty', 'detected', 'multiDetected'].includes(screenState)
+  const showWorkflowGrid = isQueueState || screenState === 'downloading' || screenState === 'done' || screenState === 'doneIssues'
+
+  const progressPct = useMemo(() => {
+    if (!job?.total) return 0
+    if (job.status === 'done') return 100
+    return Math.round((job.processed / job.total) * 100)
+  }, [job])
+
+  const issueRows = useMemo(() => {
+    const list = []
+    if (!job?.rows) return list
+    for (const row of job.rows) {
+      const badge = getRowBadge(row, true)
+      if (badge.variant === 'failed' || badge.variant === 'review' || badge.variant === 'skipped') {
+        const track = tracks[row.index]
+        if (track) list.push({ track, index: row.index, row })
+      }
+    }
+    return list
+  }, [job, tracks])
+
+  const isConnected = spotifyConnectionStatus === 'connected'
+
+  const downloadProgress = useMemo(() => {
+    if (!job?.rows?.length || !isRunning) return null
+    return findDownloadProgress(detectedItems, itemTrackOffsets, job.rows)
+  }, [job, isRunning, detectedItems, itemTrackOffsets])
+
+  const downloadedCount = job ? countDownloaded(job.rows) : 0
+  const totalTracks = tracks.length
+
+  const getItemForRow = useCallback(
+    (row) => detectedItems.find((item) => item.id === row.itemId) ?? null,
+    [detectedItems],
+  )
+
+  const toggleSongs = useCallback((itemId) => {
+    setExpandedSongItems((prev) => {
+      const next = new Set(prev)
+      if (next.has(itemId)) next.delete(itemId)
+      else next.add(itemId)
+      return next
+    })
+  }, [])
 
   useEffect(() => {
     let cancelled = false
     async function init() {
+      const params = new URLSearchParams(window.location.search)
+      const oauthReturn = params.get('spotify_connected') || params.get('spotify_error')
+      if (sessionStorage.getItem(SPOTIFY_CONNECT_KEY) && oauthReturn) {
+        setSpotifyConnectionStatus('connecting')
+      }
+
       try {
-        const [h, me, s, p] = await Promise.all([
+        const [h, me, s] = await Promise.all([
           fetchHealth(),
           fetchSpotifyMe(),
           fetchSettings(),
-          fetchPreview().catch(() => null),
         ])
         if (cancelled) return
         setHealth(h)
-        setSpotifyUser(me.connected ? me.user : null)
         setSettings(s)
         if (s.output_dir) setOutDir(s.output_dir)
         else if (h.defaultOutDir) setOutDir(h.defaultOutDir)
-        if (p?.tracks?.length) {
-          setTracks(p.tracks)
-          setPlaylistName(p.playlist || p.sourceName || '')
-          setSource({ type: p.sourceType, name: p.sourceName, coverUrl: p.coverUrl })
+
+        if (me.connected) {
+          setSpotifyUser(me.user)
+          setSpotifyConnectionStatus('connected')
+          sessionStorage.removeItem(SPOTIFY_CONNECT_KEY)
+          connectLockRef.current = false
+        } else if (params.get('spotify_error')) {
+          setSpotifyUser(null)
+          setSpotifyConnectionStatus('disconnected')
+          sessionStorage.removeItem(SPOTIFY_CONNECT_KEY)
+          connectLockRef.current = false
+        } else {
+          setSpotifyUser(null)
+          setSpotifyConnectionStatus('disconnected')
+          sessionStorage.removeItem(SPOTIFY_CONNECT_KEY)
+          connectLockRef.current = false
         }
       } catch (err) {
-        if (!cancelled) setError(err.message)
+        if (!cancelled) {
+          setError(err.message)
+          setSpotifyConnectionStatus('disconnected')
+          sessionStorage.removeItem(SPOTIFY_CONNECT_KEY)
+          connectLockRef.current = false
+        }
+      }
+
+      if (params.get('spotify_connected')) {
+        window.history.replaceState({}, '', window.location.pathname)
       }
     }
     init()
-    const params = new URLSearchParams(window.location.search)
-    if (params.get('spotify_connected')) {
-      fetchSpotifyMe().then((me) => {
-        if (!cancelled) setSpotifyUser(me.connected ? me.user : null)
-      })
-      window.history.replaceState({}, '', window.location.pathname)
-    }
     return () => {
       cancelled = true
       if (pollRef.current) clearInterval(pollRef.current)
@@ -113,12 +235,17 @@ export default function App() {
     pollRef.current = setInterval(async () => {
       try {
         const j = await getJob(jobId)
-        setJob(j)
-        setLogs(j.logs || [])
+        if (!pollRef.current) return
         if (['done', 'failed', 'cancelled'].includes(j.status)) {
           clearInterval(pollRef.current)
           pollRef.current = null
+          if (j.status === 'cancelled') {
+            setJob(null)
+            setJobId(null)
+            return
+          }
         }
+        setJob(j)
       } catch (err) {
         setError(err.message)
       }
@@ -128,68 +255,208 @@ export default function App() {
     }
   }, [jobId])
 
-  async function handleConnect() {
+  const detectLink = useCallback(async (rowId, url) => {
+    const trimmed = url.trim()
+    if (!trimmed) {
+      setLinkRows((rows) => {
+        const row = rows.find((r) => r.id === rowId)
+        if (row?.itemId) {
+          setDetectedItems((items) => items.filter((item) => item.id !== row.itemId))
+          setExpandedSongItems((prev) => {
+            const next = new Set(prev)
+            if (row.itemId) next.delete(row.itemId)
+            return next
+          })
+        }
+        return rows.map((r) => (r.id === rowId ? { ...r, status: 'empty', error: null, itemId: null } : r))
+      })
+      return
+    }
+
+    if (!isSpotifyUrl(trimmed)) {
+      setLinkRows((rows) => rows.map((r) => (r.id === rowId ? { ...r, status: 'invalid', error: 'Invalid Spotify link.', itemId: null } : r)))
+      return
+    }
+
+    const normalized = normalizeSpotifyUrl(trimmed)
+    let isDuplicate = false
+    setLinkRows((rows) => {
+      isDuplicate = rows.some((r) => r.id !== rowId && r.url.trim() && normalizeSpotifyUrl(r.url) === normalized && r.status === 'ready')
+      return rows.map((r) => (r.id === rowId ? { ...r, status: isDuplicate ? 'duplicate' : 'detecting', error: isDuplicate ? 'Duplicate link.' : null } : r))
+    })
+    if (isDuplicate) return
+
+    if (spotifyConnectionStatus !== 'connected') {
+      setLinkRows((rows) => rows.map((r) => (r.id === rowId ? { ...r, status: 'error', error: 'Connect Spotify first.', itemId: null } : r)))
+      return
+    }
+
+    let previousItemId = null
+    setLinkRows((rows) => {
+      previousItemId = rows.find((r) => r.id === rowId)?.itemId ?? null
+      return rows
+    })
+
+    try {
+      const res = await resolveSpotifyUrl(trimmed)
+      const itemId = nextItemId++
+      const item = {
+        id: itemId,
+        type: res.type,
+        name: res.name,
+        owner: res.owner,
+        coverUrl: res.coverUrl,
+        trackCount: res.trackCount ?? res.tracks?.length ?? 0,
+        tracks: res.tracks,
+      }
+      setDetectedItems((items) => {
+        const withoutOld = items.filter((i) => i.id !== previousItemId)
+        return [...withoutOld, item]
+      })
+      if (previousItemId) {
+        setExpandedSongItems((prev) => {
+          const next = new Set(prev)
+          next.delete(previousItemId)
+          return next
+        })
+      }
+      setLinkRows((rows) => rows.map((r) => (r.id === rowId ? { ...r, status: 'ready', error: null, itemId, url: trimmed } : r)))
+      setJob(null)
+      setJobId(null)
+      setReviewingIssues(false)
+    } catch (err) {
+      setLinkRows((rows) => rows.map((r) => (r.id === rowId ? { ...r, status: 'error', error: err.message || 'Could not detect.', itemId: null } : r)))
+    }
+  }, [spotifyConnectionStatus])
+
+  function updateLinkUrl(rowId, url) {
+    if (!url.trim()) {
+      setLinkRows((rows) => {
+        const row = rows.find((r) => r.id === rowId)
+        if (row?.itemId) {
+          setDetectedItems((items) => items.filter((item) => item.id !== row.itemId))
+          setExpandedSongItems((prev) => {
+            const next = new Set(prev)
+            if (row.itemId) next.delete(row.itemId)
+            return next
+          })
+        }
+        return rows.map((r) => (r.id === rowId ? { ...r, url, status: 'empty', error: null, itemId: null } : r))
+      })
+      return
+    }
+    setLinkRows((rows) => rows.map((r) => (r.id === rowId ? { ...r, url, error: null } : r)))
+  }
+
+  function handleAddLink() {
+    setLinkRows((rows) => {
+      const hasEmpty = rows.some((r) => !r.url.trim() && !r.itemId)
+      if (hasEmpty) return rows
+      return [...rows, createLinkRow()]
+    })
+  }
+
+  function handleRemoveLink(rowId) {
+    setLinkRows((rows) => {
+      const row = rows.find((r) => r.id === rowId)
+      if (row?.itemId) {
+        setDetectedItems((items) => items.filter((item) => item.id !== row.itemId))
+        setExpandedSongItems((prev) => {
+          const next = new Set(prev)
+          if (row.itemId) next.delete(row.itemId)
+          return next
+        })
+      }
+      if (rows.length === 1) {
+        setJob(null)
+        setJobId(null)
+        return [createLinkRow()]
+      }
+      return rows.filter((r) => r.id !== rowId)
+    })
+  }
+
+  function handleRowPaste(rowId, e) {
+    const pasted = e.clipboardData?.getData('text')
+    if (pasted?.trim()) {
+      e.preventDefault()
+      updateLinkUrl(rowId, pasted.trim())
+      detectLink(rowId, pasted.trim())
+    }
+  }
+
+  function handleRowDetect(rowId) {
+    const row = linkRows.find((r) => r.id === rowId)
+    if (row) detectLink(rowId, row.url)
+  }
+
+  function handleOutDirChange(value) {
+    setOutDir(value)
+    setSettings((prev) => ({ ...prev, output_dir: value }))
+  }
+
+  async function handleBrowseFolder() {
+    if (browsingFolder) return
+    setBrowsingFolder(true)
     setError('')
+    // Let the loading spinner paint before the native picker request starts.
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+    try {
+      const result = await pickFolder(outDir)
+      if (!result.cancelled && result.path) {
+        handleOutDirChange(result.path)
+      }
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBrowsingFolder(false)
+    }
+  }
+
+  async function handleConnect() {
+    if (connectLockRef.current || spotifyConnectionStatus === 'connecting') return
+    connectLockRef.current = true
+    setSpotifyConnectionStatus('connecting')
+    setError('')
+    sessionStorage.setItem(SPOTIFY_CONNECT_KEY, '1')
     try {
       await startSpotifyLogin()
     } catch (err) {
       setError(err.message)
+      setSpotifyConnectionStatus('disconnected')
+      sessionStorage.removeItem(SPOTIFY_CONNECT_KEY)
+      connectLockRef.current = false
     }
   }
 
-  async function handleLogout() {
-    await spotifyLogout()
+  async function handleDisconnect() {
+    setError('')
+    try {
+      await spotifyLogout()
+    } catch (err) {
+      setError(err.message)
+      return
+    }
     setSpotifyUser(null)
+    setSpotifyConnectionStatus('disconnected')
+    connectLockRef.current = false
+    sessionStorage.removeItem(SPOTIFY_CONNECT_KEY)
+    handleClear()
   }
 
-  async function handleResolveSpotify() {
+  async function handleDownload() {
     setError('')
-    setLoading(true)
-    try {
-      const res = await resolveSpotifyUrl(spotifyUrl.trim())
-      setTracks(res.tracks)
-      setPlaylistName(res.playlist || res.name)
-      setSource({ type: res.type, name: res.name, coverUrl: res.coverUrl, owner: res.owner })
-      setJob(null)
-      setJobId(null)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function handleCsv(file) {
-    if (!file) return
-    setError('')
-    setLoading(true)
-    try {
-      const res = await importCsv(file)
-      setTracks(res.tracks)
-      setPlaylistName(res.playlist || res.name)
-      setSource({ type: 'csv', name: res.name })
-      setJob(null)
-      setJobId(null)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  async function handleStart() {
-    setError('')
-    setLogs([])
+    setReviewingIssues(false)
     try {
       await saveSettings({ ...settings, output_dir: outDir })
       const j = await startJob({
         tracks,
-        playlist: playlistName,
+        playlist: jobPlaylist,
         outDir,
-        sourceType: source?.type || null,
+        sourceType: primarySource?.type || null,
         fmt: settings.fmt || 'mp3',
-        writeM3u8: source?.type !== 'album' && Boolean(settings.write_m3u8),
-        writeM3uPlain: source?.type !== 'album' && settings.write_m3u_plain !== false,
+        writeM3u8: primarySource?.type !== 'album' && Boolean(settings.write_m3u8),
+        writeM3uPlain: primarySource?.type !== 'album' && settings.write_m3u_plain !== false,
         embedArt: settings.embed_art !== false,
         mp3Quality: Number(settings.mp3_quality ?? 0),
         forceDownload: Boolean(settings.force_download),
@@ -203,9 +470,30 @@ export default function App() {
     }
   }
 
-  async function handleCancel() {
+  async function handleStop() {
     if (!jobId) return
-    await cancelJob(jobId)
+    const id = jobId
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+    setJobId(null)
+    setJob(null)
+    try {
+      await cancelJob(id)
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  function handleClear() {
+    setLinkRows([createLinkRow()])
+    setDetectedItems([])
+    setExpandedSongItems(new Set())
+    setJob(null)
+    setJobId(null)
+    setReviewingIssues(false)
+    setError('')
   }
 
   async function openAlternatives(index) {
@@ -228,12 +516,7 @@ export default function App() {
   }
 
   async function pickAlternative(match) {
-    if (altRow == null) return
-    if (!jobId) {
-      setError('Start the download first, then pick an alternative for a track.')
-      setAltRow(null)
-      return
-    }
+    if (altRow == null || !jobId) return
     try {
       await downloadTrackWithMatch(jobId, altRow, match)
       const j = await getJob(jobId)
@@ -244,227 +527,121 @@ export default function App() {
     setAltRow(null)
   }
 
-  function rowClass(index) {
-    const row = rowMap.get(index)
-    if (!row) return ''
-    if (row.skipped || row.lowConfidence || (row.confidence > 0 && row.confidence < CONFIDENCE_MIN)) {
-      return 'row-warn'
-    }
-    if (row.downloaded) return 'row-done'
-    if (row.error) return 'row-fail'
-    return ''
-  }
-
-  const progressPct = job?.total ? Math.round((job.processed / job.total) * 100) : 0
+  const downloadLabel = detectedItems.length > 1 ? 'Download All' : 'Download'
+  const savedPath = outDir.trim()
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <h1>Export-It</h1>
-          <span className="subtitle">CSVMusic-style downloader</span>
-        </div>
-        <div className="topbar-actions">
-          {spotifyUser ? (
-            <div className="spotify-user">
-              <span>{spotifyUser.displayName || 'Spotify'}</span>
-              <button type="button" className="btn btn-ghost" onClick={handleLogout}>
-                Disconnect
-              </button>
+    <div className={`app-shell${isConnected ? '' : ' app-shell-connect'}`}>
+      {!isConnected ? (
+        <>
+          {health && !health.ok && (
+            <div className="banner banner-warn" role="status">
+              <strong>Setup required</strong>
+              <p>{(health.errors || []).join(', ')}</p>
             </div>
-          ) : (
-            <button type="button" className="btn btn-spotify" onClick={handleConnect}>
-              Connect Spotify
-            </button>
           )}
-          <button type="button" className="btn btn-ghost" onClick={() => setHelpOpen((v) => !v)}>
-            Help
-          </button>
-          <button type="button" className="btn btn-ghost" onClick={() => setSettingsOpen(true)}>
-            Settings
-          </button>
-        </div>
-      </header>
+          <ConnectScreen
+            status={spotifyConnectionStatus === 'connecting' ? 'connecting' : 'disconnected'}
+            connectError={error}
+            onConnect={handleConnect}
+          />
+        </>
+      ) : (
+        <>
+          <AppHeader displayName={spotifyUser?.displayName} onDisconnect={handleDisconnect} />
+          {error && (
+            <div className="banner banner-error" role="alert">
+              <span>{error}</span>
+              <IconButton icon={faXmark} label="Dismiss" onClick={() => setError('')} className="banner-dismiss" />
+            </div>
+          )}
+          {health && !health.ok && (
+            <div className="banner banner-warn" role="status">
+              <strong>Setup required</strong>
+              <p>{(health.errors || []).join(', ')}</p>
+            </div>
+          )}
 
-      {helpOpen && (
-        <section className="help-panel">
-          <p><strong>Spotify:</strong> Connect, paste an album or playlist URL, click Load.</p>
-          <p><strong>CSV fallback:</strong> Drop a TuneMyMusic CSV if you already have one.</p>
-          <p><strong>Download:</strong> Set output folder, click Start. Yellow rows = low confidence — try Alternatives.</p>
-        </section>
-      )}
+          <main className="main-content">
+            {screenState === 'error' && (
+              <IssueReview
+                issues={issueRows}
+                onRetry={openAlternatives}
+                onHide={() => setReviewingIssues(false)}
+              />
+            )}
 
-      {error && (
-        <div className="banner banner-error" role="alert">
-          {error}
-          <button type="button" onClick={() => setError('')}>×</button>
-        </div>
-      )}
+            {showWorkflowGrid && (
+              <div className="workflow-grid">
+                <div className="workflow-main">
+                  <SpotifyLinksSection
+                    rows={linkRows}
+                    getItemForRow={getItemForRow}
+                    onUrlChange={updateLinkUrl}
+                    onPaste={handleRowPaste}
+                    onDetect={handleRowDetect}
+                    onRemove={handleRemoveLink}
+                    onAddLink={handleAddLink}
+                    canAddLink={!isRunning}
+                    expandedSongItems={expandedSongItems}
+                    onToggleSongs={toggleSongs}
+                    jobRows={job?.rows}
+                    itemTrackOffsets={itemTrackOffsets}
+                    showTrackStatus={Boolean(job?.rows?.length)}
+                  />
+                </div>
 
-      {health && !health.ok && (
-        <div className="banner banner-warn">
-          Setup issues: {(health.errors || []).join(' · ')}
-        </div>
-      )}
+                <aside className="workflow-sidebar">
+                  {isQueueState && (
+                    <DownloadSummaryCard
+                      itemCount={detectedItems.length}
+                      songCount={tracks.length}
+                      settings={settings}
+                      outDir={outDir}
+                      onSettingsChange={setSettings}
+                      onOutDirChange={handleOutDirChange}
+                      onBrowseFolder={handleBrowseFolder}
+                      browseLoading={browsingFolder}
+                      browseDisabled={browsingFolder || isRunning}
+                      downloadLabel={downloadLabel}
+                      onDownload={handleDownload}
+                      disabled={!canDownload}
+                    />
+                  )}
 
-      <section className="import-panel">
-        <div className="import-row">
-          <label className="field-label">Spotify album or playlist URL</label>
-          <div className="field-row">
-            <input
-              type="url"
-              placeholder="https://open.spotify.com/album/… or playlist/…"
-              value={spotifyUrl}
-              onChange={(e) => setSpotifyUrl(e.target.value)}
-              disabled={!spotifyUser || loading}
+                  {screenState === 'downloading' && (
+                    <ProgressView
+                      progress={downloadProgress}
+                      progressPct={progressPct}
+                      onStop={handleStop}
+                    />
+                  )}
+
+                  {(screenState === 'done' || screenState === 'doneIssues') && (
+                    <CompletionView
+                      compact
+                      downloaded={downloadedCount}
+                      total={job?.total ?? totalTracks}
+                      savedPath={savedPath}
+                      issueCount={screenState === 'doneIssues' ? issueCount : 0}
+                      onDownloadMore={handleClear}
+                    />
+                  )}
+                </aside>
+              </div>
+            )}
+          </main>
+
+          {altRow != null && (
+            <AlternativesModal
+              loading={altLoading}
+              options={altOptions}
+              track={tracks[altRow]}
+              onClose={() => setAltRow(null)}
+              onPick={pickAlternative}
             />
-            <button type="button" className="btn btn-primary" disabled={!spotifyUser || !spotifyUrl.trim() || loading} onClick={handleResolveSpotify}>
-              Load
-            </button>
-          </div>
-        </div>
-
-        <div
-          className="csv-drop"
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault()
-            const file = e.dataTransfer.files?.[0]
-            if (file) handleCsv(file)
-          }}
-          onClick={() => csvInputRef.current?.click()}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => e.key === 'Enter' && csvInputRef.current?.click()}
-        >
-          <input
-            ref={csvInputRef}
-            type="file"
-            accept=".csv,text/csv"
-            hidden
-            onChange={(e) => handleCsv(e.target.files?.[0])}
-          />
-          <strong>Or drop a TuneMyMusic CSV here</strong>
-          <span>Click to browse</span>
-        </div>
-
-        <div className="import-row">
-          <label className="field-label">Output folder</label>
-          <input
-            type="text"
-            placeholder="e.g. /Users/you/Music"
-            value={outDir}
-            onChange={(e) => setOutDir(e.target.value)}
-          />
-        </div>
-      </section>
-
-      {source && (
-        <section className="source-summary">
-          {source.coverUrl && <img src={source.coverUrl} alt="" className="cover" />}
-          <div>
-            <div className="source-type">{source.type === 'album' ? 'Album' : source.type === 'playlist' ? 'Playlist' : 'CSV'}</div>
-            <h2>{source.name}</h2>
-            {source.owner && <p className="muted">{source.owner}</p>}
-            <p className="muted">{tracks.length} tracks</p>
-          </div>
-        </section>
-      )}
-
-      {tracks.length > 0 && (
-        <section className="track-section">
-          <div className="track-toolbar">
-            <span>{job ? `Matched ${job.matched} · Skipped ${job.skipped}` : `${tracks.length} tracks ready`}</span>
-            <div className="track-toolbar-actions">
-              {isRunning && (
-                <button type="button" className="btn btn-ghost" onClick={handleCancel}>
-                  Cancel
-                </button>
-              )}
-              <button type="button" className="btn btn-start" disabled={!canStart} onClick={handleStart}>
-                {isRunning ? 'Downloading…' : 'Start'}
-              </button>
-            </div>
-          </div>
-
-          {job && (
-            <div className="progress-wrap">
-              <div className="progress-bar" style={{ width: `${progressPct}%` }} />
-              <span className="progress-label">{job.processed}/{job.total} · {job.message}</span>
-            </div>
           )}
-
-          <div className="table-wrap">
-            <table className="track-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Title</th>
-                  <th>Artist</th>
-                  <th>Album</th>
-                  <th>Status</th>
-                  <th>Match</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {tracks.map((t, i) => {
-                  const row = rowMap.get(i)
-                  const status = row?.status || (job ? 'Queued' : 'Ready')
-                  return (
-                    <tr key={`${t.sp_id || t.title}-${i}`} className={rowClass(i)}>
-                      <td>{i + 1}</td>
-                      <td>{t.title}</td>
-                      <td>{t.artists}</td>
-                      <td>{t.album}</td>
-                      <td className="status-cell">{status}</td>
-                      <td>{formatConfidence(row?.confidence)}</td>
-                      <td>
-                        <button
-                          type="button"
-                          className="btn btn-small"
-                          onClick={() => openAlternatives(i)}
-                        >
-                          Alternatives
-                        </button>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
-
-      {logs.length > 0 && (
-        <section className="log-panel">
-          <h3>Log</h3>
-          <pre>{logs.join('\n')}</pre>
-        </section>
-      )}
-
-      {settingsOpen && (
-        <SettingsPanel
-          settings={settings}
-          onClose={() => setSettingsOpen(false)}
-          onSave={async (next) => {
-            const saved = await saveSettings(next)
-            setSettings(saved)
-            if (saved.output_dir) setOutDir(saved.output_dir)
-            setSettingsOpen(false)
-          }}
-        />
-      )}
-
-      {altRow != null && (
-        <AlternativesModal
-          loading={altLoading}
-          options={altOptions}
-          track={tracks[altRow]}
-          onClose={() => setAltRow(null)}
-          onPick={pickAlternative}
-        />
+        </>
       )}
     </div>
   )

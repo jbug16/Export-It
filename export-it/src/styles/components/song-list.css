@@ -1,0 +1,112 @@
+/* Shared song list table */
+
+.song-list,
+.track-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.song-list-row,
+.track-list-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) minmax(0, 1fr) 48px;
+  gap: var(--space-3);
+  align-items: center;
+  justify-items: start;
+  min-height: var(--control-height-md);
+  padding: var(--space-2) 0;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-tight);
+  border-bottom: var(--border-width) solid rgba(59, 65, 77, 0.3);
+  margin: 0 calc(var(--space-3) * -1);
+  padding-left: var(--space-3);
+  padding-right: var(--space-3);
+  border-radius: var(--radius-sm);
+  transition: background-color 0.12s ease;
+}
+
+.song-list-row:not(.song-list-header):hover,
+.track-list-row:not(.track-list-header):hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.song-list-row:last-child,
+.track-list-row:last-child {
+  border-bottom: none;
+}
+
+.song-list-header,
+.track-list-header {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+  border-bottom: var(--border-width) solid var(--color-border);
+  padding-bottom: var(--space-2);
+  margin-bottom: 0;
+  min-height: var(--control-height-sm);
+}
+
+.song-list-status,
+.track-list-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.song-status-icon,
+.track-status-icon {
+  font-size: var(--font-size-2xs);
+}
+
+.song-status-downloading,
+.track-status-downloading {
+  color: var(--color-primary-soft);
+}
+
+.song-status-done,
+.track-status-done {
+  color: var(--color-success-soft);
+}
+
+.song-status-failed,
+.track-status-failed {
+  color: var(--color-danger-soft);
+}
+
+.song-list-num,
+.track-list-num {
+  text-align: left;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+  overflow: visible;
+  white-space: nowrap;
+}
+
+.song-list-title,
+.song-list-artist,
+.track-list-title,
+.track-list-artist {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.song-list-artist,
+.track-list-artist {
+  color: var(--color-text-muted);
+}
+
+.album-track-list {
+  border-top: var(--border-width) solid var(--color-border);
+  padding-top: 6px;
+  margin-top: 2px;
+}
